@@ -7,9 +7,16 @@
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
-        "forceConsistentCasingInFileNames": true
+        "forceConsistentCasingInFileNames": true,
+        "sourceMap": true,
+        "removeComments": true
     },
     "include": [
         "src/**/*"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist",
+        "tests"
     ]
 }

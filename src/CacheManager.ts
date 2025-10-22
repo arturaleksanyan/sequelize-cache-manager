@@ -1,6 +1,7 @@
+// src/CacheManager.ts
 import { EventEmitter } from "events";
 import { Model, Op } from "sequelize";
-import { CacheManagerOptions, PlainRecord } from "./types";
+import { CacheManagerOptions, PlainRecord, RedisOptions } from "./types";
 
 type CacheEntry = { data: PlainRecord; expiresAt: number };
 
@@ -23,6 +24,11 @@ export class CacheManager<T extends Model> extends EventEmitter {
     private lazyReload: boolean;
     private staleWhileRevalidate: boolean;
     private logger: any;
+    private redisClient: any = null; // RedisClientType from 'redis' (optional dep, so using any)
+    private redisSubscriber: any = null; // Separate client for Pub/Sub
+    private redisKeyPrefix: string = "";
+    private redisEnabled: boolean = false;
+    private clusterSyncEnabled: boolean = false;
 
     private cache: { id: Record<string, CacheEntry>; byKey: Record<string, Record<string, CacheEntry>> } = { id: {}, byKey: {} };
     private refreshTimer: NodeJS.Timeout | null = null;
@@ -33,6 +39,7 @@ export class CacheManager<T extends Model> extends EventEmitter {
     private lastAutoSync = 0;
     private minAutoSyncInterval: number;
     private readyPromise: Promise<void> | null = null;
+    private ready: boolean = false;
 
     constructor(model: typeof Model & SequelizeModel<T>, options: CacheManagerOptions<T> = {}) {
         super();
@@ -45,7 +52,129 @@ export class CacheManager<T extends Model> extends EventEmitter {
         this.staleWhileRevalidate = options.staleWhileRevalidate ?? true;
         this.logger = options.logger ?? console;
         this.minAutoSyncInterval = options.minAutoSyncInterval ?? 10_000;
+
+        // Initialize Redis if configured
+        if (options.redis) {
+            this._initRedis(options.redis);
+        }
     }
+
+    private async _initRedis(redisOptions: RedisOptions) {
+        try {
+            // Use provided client or create new one
+            if (redisOptions.client) {
+                this.redisClient = redisOptions.client;
+                this.redisEnabled = true;
+            } else {
+                // Try to dynamically require redis
+                let redis: any;
+                try {
+                    redis = await (Function('return import("redis")')() as Promise<any>);
+                } catch {
+                    this.logger.warn?.('Redis module not found. Install with: npm install redis');
+                    return;
+                }
+
+                const clientOptions: any = {
+                    url: redisOptions.url,
+                    socket: redisOptions.host ? {
+                        host: redisOptions.host,
+                        port: redisOptions.port ?? 6379
+                    } : undefined,
+                    password: redisOptions.password,
+                    database: redisOptions.db ?? 0,
+                };
+
+                this.redisClient = redis.createClient(clientOptions);
+                this.redisClient.on('error', (err: Error) => {
+                    this.logger.error?.('Redis client error:', err);
+                    this.emit('error', err);
+                });
+
+                this.redisClient.on('end', () => {
+                    this.logger.warn?.('Redis connection lost. Attempting to reconnect...');
+                    setTimeout(() => {
+                        if (this.redisClient && !this.redisClient.isOpen) {
+                            this.redisClient.connect().catch((err: Error) => {
+                                this.logger.error?.('Redis reconnect failed:', err);
+                            });
+                        }
+                    }, 5000);
+                });
+
+                await this.redisClient.connect();
+                this.redisEnabled = true;
+            }
+
+            this.redisKeyPrefix = redisOptions.keyPrefix ?? `cache:${this.model.name}:`;
+            this.logger.info?.(`Redis backend enabled for ${this.model.name}`);
+
+            // Initialize Pub/Sub for cluster-wide cache sync if enabled
+            if (redisOptions.enableClusterSync) {
+                await this._initClusterSync();
+            }
+        } catch (err) {
+            this.logger.error?.('Failed to initialize Redis:', err);
+            this.redisEnabled = false;
+        }
+    }
+
+    private async _initClusterSync() {
+        try {
+            // Create a separate subscriber client (Redis requirement)
+            this.redisSubscriber = this.redisClient.duplicate();
+            await this.redisSubscriber.connect();
+
+            const channel = `${this.redisKeyPrefix}invalidate`;
+
+            // Subscribe to invalidation messages
+            await this.redisSubscriber.subscribe(channel, (message: string) => {
+                try {
+                    const { field, value, source } = JSON.parse(message);
+
+                    // Ignore messages from this instance
+                    if (source === this._instanceId) return;
+
+                    this.logger.debug?.(`Cluster invalidation received: ${field}=${value}`);
+
+                    // Invalidate locally without re-publishing
+                    if (field && value !== undefined) {
+                        const entry = this.cache.byKey?.[field]?.[String(value)];
+                        if (entry) {
+                            const id = entry.data.id;
+                            this._removeById(id);
+                            for (const kf of this.keyFields) {
+                                const kv = entry.data[kf];
+                                if (kv !== undefined && kv !== null) {
+                                    this._removeByKey(kf, kv);
+                                }
+                            }
+                        }
+                    }
+                } catch (err) {
+                    this.logger.error?.('Error processing cluster invalidation:', err);
+                }
+            });
+
+            // Publish local invalidations to cluster
+            this.on('itemInvalidated', ({ field, value }) => {
+                if (this.clusterSyncEnabled && this.redisClient) {
+                    const message = JSON.stringify({ field, value, source: this._instanceId });
+                    this.redisClient.publish(channel, message)
+                        .catch((err: Error) => this.logger.error?.('Pub/Sub publish failed:', err));
+                }
+            });
+
+            this.clusterSyncEnabled = true;
+            this.logger.info?.(`Redis cluster sync enabled for ${this.model.name}`);
+        } catch (err) {
+            this.logger.error?.('Failed to initialize cluster sync:', err);
+            this.clusterSyncEnabled = false;
+        }
+    }
+
+    // Unique instance identifier for cluster sync
+    private _instanceId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     private _getExpiryTime() { return this.ttlMs ? Date.now() + this.ttlMs : Infinity; }
 
@@ -79,14 +208,39 @@ export class CacheManager<T extends Model> extends EventEmitter {
             }
         }
 
-        // Log memory usage periodically
+        // Persist to Redis if enabled (fire-and-forget for performance)
+        if (this.redisEnabled && this.redisClient) {
+            const key = `${this.redisKeyPrefix}${plain.id}`;
+            const ttlSeconds = this.ttlMs ? Math.ceil(this.ttlMs / 1000) : undefined;
+            if (ttlSeconds) {
+                this.redisClient.set(key, JSON.stringify(entry), { EX: ttlSeconds })
+                    .catch((err: Error) => this.logger.error?.('Redis set failed:', err));
+            } else {
+                this.redisClient.set(key, JSON.stringify(entry))
+                    .catch((err: Error) => this.logger.error?.('Redis set failed:', err));
+            }
+        }
+
+        // Log memory usage periodically and warn if too large
         const cacheSize = Object.keys(this.cache.id).length;
         if (cacheSize % 1000 === 0 && cacheSize > 0) {
             this.logger.info?.(`${this.model.name} cache size: ${cacheSize} entries`);
         }
+        if (cacheSize > 50_000 && cacheSize % 10_000 === 0) {
+            this.logger.warn?.(`Cache size exceeded ${cacheSize} for ${this.model.name}, consider TTL tuning.`);
+        }
     }
 
-    private _removeById(id: string | number) { delete this.cache.id[String(id)]; }
+    private _removeById(id: string | number) {
+        delete this.cache.id[String(id)];
+
+        // Remove from Redis if enabled (fire-and-forget for performance)
+        if (this.redisEnabled && this.redisClient) {
+            const key = `${this.redisKeyPrefix}${id}`;
+            this.redisClient.del(key)
+                .catch((err: Error) => this.logger.error?.('Redis delete failed:', err));
+        }
+    }
     private _removeByKey(field: string, value: string | number) { if (this.cache.byKey[field]) delete this.cache.byKey[field][String(value)]; }
 
     private _removeItem(instance: T) {
@@ -173,8 +327,23 @@ export class CacheManager<T extends Model> extends EventEmitter {
     }
 
     async getById(id: string | number) {
-        const entry = this.cache.id[String(id)];
+        let entry = this.cache.id[String(id)];
         const now = Date.now();
+
+        // Try Redis if not in memory and Redis is enabled
+        if (!entry && this.redisEnabled && this.redisClient) {
+            try {
+                const key = `${this.redisKeyPrefix}${id}`;
+                const cached = await this.redisClient.get(key);
+                if (cached) {
+                    entry = JSON.parse(cached);
+                    this.cache.id[String(id)] = entry; // Restore to memory
+                }
+            } catch (err) {
+                this.logger.error?.('Redis get failed:', err);
+            }
+        }
+
         if (!entry) return await this._lazyLoadById(id);
         if (this.ttlMs && entry.expiresAt < now) {
             if (this.staleWhileRevalidate) {
@@ -209,9 +378,26 @@ export class CacheManager<T extends Model> extends EventEmitter {
             .map(e => e.data);
     }
 
-    clear(field?: string) {
+    async clear(field?: string) {
         if (!field) {
             this.cache = { id: {}, byKey: {} };
+
+            // Clear Redis if enabled (using SCAN for better performance)
+            if (this.redisEnabled && this.redisClient) {
+                try {
+                    for await (const key of this.redisClient.scanIterator({
+                        MATCH: `${this.redisKeyPrefix}*`,
+                        COUNT: 100
+                    })) {
+                        this.redisClient.del(key).catch((err: Error) =>
+                            this.logger.error?.('Redis delete failed:', err)
+                        );
+                    }
+                } catch (err) {
+                    this.logger.error?.('Redis clear failed:', err);
+                }
+            }
+
             this.emit("cleared");
             return;
         }
@@ -233,7 +419,7 @@ export class CacheManager<T extends Model> extends EventEmitter {
                     true; // Assume it exists if getAttributes is not available
 
                 if (!hasUpdatedAt) {
-                    this.logger.warn?.(`Model ${this.model.name} has no updatedAt field — falling back to full sync`);
+                    this.logger.info?.(`Model ${this.model.name} has no updatedAt field — using full sync always`);
                     incremental = false;
                 }
             }
@@ -249,7 +435,33 @@ export class CacheManager<T extends Model> extends EventEmitter {
                 }
             } else {
                 const data = await this.model.findAll();
-                this.clear();
+                await this.clear();
+
+                // Batch Redis writes for full sync (performance optimization)
+                if (this.redisEnabled && this.redisClient && data.length > 0) {
+                    try {
+                        const pipeline = this.redisClient.multi();
+                        const ttlSeconds = this.ttlMs ? Math.ceil(this.ttlMs / 1000) : undefined;
+
+                        data.forEach((item: T) => {
+                            const plain = item.get ? item.get({ plain: true }) : { ...(item as any) };
+                            const expiresAt = this._getExpiryTime();
+                            const entry = { data: plain, expiresAt };
+                            const key = `${this.redisKeyPrefix}${plain.id}`;
+
+                            if (ttlSeconds) {
+                                pipeline.set(key, JSON.stringify(entry), { EX: ttlSeconds });
+                            } else {
+                                pipeline.set(key, JSON.stringify(entry));
+                            }
+                        });
+
+                        await pipeline.exec();
+                    } catch (err) {
+                        this.logger.error?.('Redis batch write failed:', err);
+                    }
+                }
+
                 data.forEach((item: T) => this._setItem(item));
                 this.logger.info?.(`Full synced ${data.length} items for ${this.model.name}`);
             }
@@ -304,6 +516,8 @@ export class CacheManager<T extends Model> extends EventEmitter {
             this.attachHooks();
             this.startAutoRefresh();
             this.startCleanup();
+            this.ready = true;
+            this.emit("ready");
         });
         await this.readyPromise;
     }
@@ -312,6 +526,10 @@ export class CacheManager<T extends Model> extends EventEmitter {
         if (this.readyPromise) {
             await this.readyPromise;
         }
+    }
+
+    isReady(): boolean {
+        return this.ready;
     }
 
     startAutoRefresh() {
@@ -327,7 +545,39 @@ export class CacheManager<T extends Model> extends EventEmitter {
 
     stopAutoRefresh() { if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; this.logger.info?.("Auto-refresh stopped"); } }
 
-    destroy() { this.stopAutoRefresh(); this.stopCleanup(); this.detachHooks(); this.removeAllListeners(); this.clear(); this.logger.info?.(`${this.model.name} cache destroyed`); }
+    async destroy() {
+        this.stopAutoRefresh();
+        this.stopCleanup();
+        this.detachHooks();
+        this.removeAllListeners();
+        await this.clear();
+
+        // Disconnect Redis subscriber if enabled
+        if (this.redisSubscriber) {
+            try {
+                await this.redisSubscriber.unsubscribe();
+                if (this.redisSubscriber.isOpen) {
+                    await this.redisSubscriber.quit();
+                }
+            } catch (err) {
+                this.logger.error?.('Redis subscriber disconnect failed:', err);
+            }
+        }
+
+        // Disconnect Redis if enabled
+        if (this.redisEnabled && this.redisClient) {
+            try {
+                if (this.redisClient.isOpen) {
+                    await this.redisClient.quit();
+                }
+            } catch (err) {
+                this.logger.error?.('Redis disconnect failed:', err);
+            }
+        }
+
+        this.ready = false;
+        this.logger.info?.(`${this.model.name} cache destroyed`);
+    }
 
     async refresh(forceFull = false) {
         await this.sync(!forceFull);
@@ -377,6 +627,10 @@ export class CacheManager<T extends Model> extends EventEmitter {
         };
     }
 
+    size(): number {
+        return Object.keys(this.cache.id).length;
+    }
+
     toJSON(includeMeta = false) {
         if (includeMeta) {
             return Object.values(this.cache.id).map(entry => ({
@@ -388,9 +642,15 @@ export class CacheManager<T extends Model> extends EventEmitter {
     }
 
     loadFromJSON(arr: PlainRecord[] | Array<{ data: PlainRecord; expiresAt: number }>, hasMeta = false) {
+        const now = Date.now();
+        let loaded = 0;
+
         if (hasMeta) {
             // Load with metadata
             (arr as Array<{ data: PlainRecord; expiresAt: number }>).forEach(({ data, expiresAt }) => {
+                // Skip expired entries
+                if (this.ttlMs && expiresAt < now) return;
+
                 const entry: CacheEntry = { data, expiresAt };
                 this.cache.id[data.id] = entry;
 
@@ -401,12 +661,16 @@ export class CacheManager<T extends Model> extends EventEmitter {
                         this.cache.byKey[keyField][String(keyValue)] = entry;
                     }
                 }
+                loaded++;
             });
+            this.logger.info?.(`Loaded ${loaded}/${arr.length} ${this.model.name} items from JSON (${arr.length - loaded} expired)`);
         } else {
             // Load without metadata (legacy format)
             (arr as PlainRecord[]).forEach(obj => {
                 this._setItem({ get: () => ({ ...obj }), ...obj } as any);
+                loaded++;
             });
+            this.logger.info?.(`Loaded ${loaded} ${this.model.name} items from JSON`);
         }
     }
 

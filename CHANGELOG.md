@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2025-10-22
+
+### Added
+
+- **Redis Cluster Sync**: Multi-instance cache coherence via Pub/Sub
+  - Enable with `redis: { enableClusterSync: true }`
+  - Automatic invalidation broadcasting across all app instances
+  - Unique instance IDs prevent self-invalidation loops
+  - Separate subscriber client for Redis Pub/Sub
+- **isReady() Method**: Check if cache initialization is complete
+  - Returns boolean flag
+  - Complements existing `waitUntilReady()` and `ready` event
+- **Better Logging**: Changed "no updatedAt" from warn → info level
+
+### Improved
+
+- **Connection Reuse Pattern**: Enhanced documentation for sharing Redis clients
+- **Graceful Subscriber Cleanup**: Properly unsubscribe and quit Pub/Sub client on destroy
+
+### Documentation
+
+- Added cluster sync examples and use cases
+- Updated Redis options with `enableClusterSync`
+- Added `isReady()` method documentation
+
+## [0.5.0] - 2025-10-22
+
+### Added
+
+- **Redis Backend Support**: Optional Redis persistence layer for distributed caching
+  - Automatic persistence of all cache writes to Redis
+  - Graceful fallback to memory-only mode if Redis unavailable
+  - Support for connection URL, host/port, or external client
+  - Configurable key prefixes for multi-tenant scenarios
+  - Fire-and-forget writes for optimal performance
+  - TTL synchronization between memory and Redis
+  - Auto-reconnect on connection loss (5s retry interval)
+  - Batch Redis writes using pipelines for full sync operations
+- **New Events**: `ready` event emitted after `autoLoad()` completes
+- **Memory Safeguards**: Warn when cache exceeds 50k entries
+- **TTL Consistency**: `loadFromJSON()` now skips expired entries
+- **New Example**: `examples/redis-usage.ts` demonstrating Redis integration patterns
+- **Enhanced Documentation**: Comprehensive Redis configuration and troubleshooting guides
+
+### Improved
+
+- **Redis Performance**: Full sync now uses Redis pipelines (multi/exec) for batch writes
+- **Scalable Clear**: `clear()` uses `scanIterator` instead of `KEYS` for better performance on large datasets
+- **Redis TTL Fix**: Avoid passing `undefined` to Redis SET command (compatibility fix)
+- **Graceful Shutdown**: Check `isOpen` before calling `quit()` on Redis client
+- **Better Logging**: `loadFromJSON()` reports expired entries count
+- `getById()` checks Redis when item not in memory (lazy restore)
+- Dynamic Redis module loading (no compile-time dependency)
+
+### Dependencies
+
+- Added `redis` as optional peer dependency (>= 4.0.0)
+- Added `@types/redis` to devDependencies for type safety
+
 ## [0.4.0] - 2025-10-14
 
 ### Added
@@ -122,5 +181,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `refreshedItem` - Item lazy-loaded
 - `error` - Error occurred
 
-[0.1.0]: https://github.com/yourusername/sequelize-cache-manager/releases/tag/v0.1.0
+[0.1.0]: https://github.com/arturaleksanyan/sequelize-cache-manager/releases/tag/v0.1.0
 

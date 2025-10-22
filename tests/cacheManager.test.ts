@@ -212,11 +212,11 @@ describe("CacheManager", () => {
             ModelWithoutUpdatedAt.findAll = FakeModel.findAll.bind(ModelWithoutUpdatedAt);
             ModelWithoutUpdatedAt.name = "FakeWithoutUpdatedAt";
 
-            const warnings: string[] = [];
+            const infoMessages: string[] = [];
             const cm = new CacheManager(ModelWithoutUpdatedAt as any, {
                 logger: {
-                    info: () => { },
-                    warn: (msg: string) => warnings.push(msg),
+                    info: (msg: string) => infoMessages.push(msg),
+                    warn: () => { },
                     error: () => { },
                     debug: () => { }
                 }
@@ -224,11 +224,11 @@ describe("CacheManager", () => {
 
             await cm.sync(false);
 
-            // Try incremental sync - should fall back to full sync and warn
+            // Try incremental sync - should fall back to full sync and log info
             await cm.sync(true);
 
-            // Should have warned about missing updatedAt
-            expect(warnings.some(w => w.includes('no updatedAt'))).toBe(true);
+            // Should have logged about missing updatedAt
+            expect(infoMessages.some(w => w.includes('using full sync always'))).toBe(true);
         });
 
         it("logs debug message when no updates found", async () => {

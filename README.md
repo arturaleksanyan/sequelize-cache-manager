@@ -21,6 +21,7 @@ A lightweight, production-ready cache manager for Sequelize models with advanced
 - 📈 **Cache Statistics** - Monitor cache size and performance metrics
 - 🎯 **Selective Invalidation** - Remove specific items from cache
 - ⚡ **Ready State Management** - Wait for cache initialization to complete
+- 🔴 **Redis Backend (Optional)** - Persist cache to Redis for distributed systems
 
 ## 📦 Installation
 
@@ -30,6 +31,9 @@ npm install sequelize-cache-manager
 
 **Peer Dependencies:**
 - `sequelize` >= 6.0.0
+
+**Optional Dependencies:**
+- `redis` >= 4.0.0 (for Redis backend support)
 
 ## 🚀 Quick Start
 
@@ -69,6 +73,130 @@ const userById = await userCache.getById(123);
 const allUsers = userCache.getAll();
 ```
 
+## 🔴 Redis Backend (Optional)
+
+The cache manager supports optional Redis persistence for distributed caching scenarios. When enabled, the cache automatically syncs data to Redis while maintaining fast in-memory access.
+
+### Installation
+
+```bash
+npm install redis
+```
+
+### Basic Usage
+
+```typescript
+import { CacheManager } from 'sequelize-cache-manager';
+
+const cache = new CacheManager(User, {
+  redis: {
+    url: 'redis://localhost:6379',
+    keyPrefix: 'myapp:users:',
+  },
+});
+```
+
+### Redis Options
+
+```typescript
+interface RedisOptions {
+  url?: string;              // Redis connection URL
+  host?: string;             // Redis host (alternative to url)
+  port?: number;             // Redis port (default: 6379)
+  password?: string;         // Redis authentication
+  db?: number;               // Redis database number (default: 0)
+  keyPrefix?: string;        // Prefix for cache keys (default: 'cache:ModelName:')
+  client?: any;              // External Redis client (reuse existing connection)
+  enableClusterSync?: boolean; // Enable Pub/Sub for multi-instance cache sync (default: false)
+}
+```
+
+### Features
+
+- **Automatic Persistence**: All cache writes are automatically persisted to Redis
+- **Graceful Degradation**: If Redis is unavailable, cache falls back to memory-only mode
+- **TTL Support**: Redis TTL is automatically set based on `ttlMs` option
+- **Connection Pooling**: Reuse existing Redis clients for efficiency
+- **Fire-and-Forget Writes**: Non-blocking Redis operations for optimal performance
+- **Auto-Reconnect**: Automatically attempts to reconnect on connection loss
+- **Batch Operations**: Full sync uses Redis pipelines for optimal performance
+- **Scalable Clear**: Uses SCAN iterator instead of KEYS for large datasets
+- **Cluster Sync (Optional)**: Multi-instance cache coherence via Redis Pub/Sub
+
+### Examples
+
+#### Basic Redis Configuration
+
+```typescript
+const cache = new CacheManager(User, {
+  ttlMs: 60_000, // 1 minute
+  redis: {
+    url: 'redis://localhost:6379',
+  },
+});
+
+await cache.autoLoad();
+const user = await cache.getById(1); // Served from memory, backed by Redis
+```
+
+#### Using Existing Redis Client
+
+```typescript
+import { createClient } from 'redis';
+
+const redisClient = createClient({ url: 'redis://localhost:6379' });
+await redisClient.connect();
+
+const cache = new CacheManager(User, {
+  redis: {
+    client: redisClient,
+    keyPrefix: 'myapp:users:',
+  },
+});
+```
+
+#### Cache Persistence Across Restarts
+
+```typescript
+// First instance
+const cache1 = new CacheManager(User, {
+  redis: { url: 'redis://localhost:6379' },
+  ttlMs: null, // No expiry
+});
+await cache1.autoLoad();
+await cache1.destroy();
+
+// Second instance - data recovered from Redis
+const cache2 = new CacheManager(User, {
+  redis: { url: 'redis://localhost:6379' },
+});
+const user = await cache2.getById(1); // Retrieved from Redis
+```
+
+#### Cluster-Wide Cache Sync (Multi-Instance)
+
+```typescript
+// Enable Pub/Sub for multi-instance cache coherence
+const cache = new CacheManager(User, {
+  redis: {
+    url: 'redis://localhost:6379',
+    enableClusterSync: true, // 🔥 Sync invalidations across all instances
+  },
+});
+
+// When one instance invalidates, all instances are notified
+cache.invalidate('email', 'john@example.com');
+// ↓ Redis Pub/Sub broadcasts to all instances
+// ↓ All other instances also remove this item from cache
+```
+
+**Use Cases:**
+- Multiple app instances behind a load balancer
+- Microservices sharing the same models
+- Horizontal scaling with consistent caching
+
+For more examples, see [examples/redis-usage.ts](./examples/redis-usage.ts).
+
 ## 📖 API Reference
 
 ### Constructor
@@ -87,6 +215,7 @@ new CacheManager<T extends Model>(model: typeof Model, options?: CacheManagerOpt
 | `cleanupIntervalMs` | `number` | `60000` | TTL cleanup interval (1 minute) |
 | `lazyReload` | `boolean` | `true` | Load missing items on-demand |
 | `staleWhileRevalidate` | `boolean` | `true` | Return stale data while refreshing |
+| `redis` | `RedisOptions` | `undefined` | Optional Redis backend configuration (see Redis section) |
 | `logger` | `object` | `console` | Custom logger with `info`, `warn`, `error`, `debug` methods |
 
 ### Core Methods
@@ -178,6 +307,24 @@ const cache = new CacheManager(User);
 cache.autoLoad(); // Don't await
 // ... do other initialization ...
 await cache.waitUntilReady(); // Wait for cache to be ready
+```
+
+#### `isReady(): boolean`
+
+Check if cache has finished initializing (synchronous).
+
+```typescript
+const cache = new CacheManager(User);
+cache.autoLoad();
+
+if (cache.isReady()) {
+  console.log('Cache is ready!');
+}
+
+// Or use with event
+cache.on('ready', () => {
+  console.log('Cache ready:', cache.isReady()); // true
+});
 ```
 
 #### `invalidate(field: string, value: string | number): void`
@@ -357,6 +504,7 @@ CacheManager extends `EventEmitter` and emits the following events:
 | `itemInvalidated` | `{ field, value }` | Item manually invalidated |
 | `clearedField` | `string` | Specific field index cleared |
 | `error` | `Error` | Error during sync/refresh/lazy-load |
+| `ready` | - | Cache initialization completed (after `autoLoad()`) |
 
 **Note:** All events are fully type-safe with IntelliSense support!
 
@@ -823,6 +971,52 @@ await cache.autoLoad();
   lazyReload: true
 }
 ```
+
+## 🔴 Redis Troubleshooting
+
+### Redis connection fails but cache still works?
+
+The cache gracefully degrades to memory-only mode if Redis is unavailable. Check your Redis connection settings and ensure the Redis server is running.
+
+### How do I monitor Redis operations?
+
+Enable debug logging and listen to the `error` event:
+```typescript
+const cache = new CacheManager(User, {
+  redis: { url: 'redis://localhost:6379' },
+  logger: {
+    info: console.log,
+    error: console.error,
+    debug: console.debug,
+  },
+});
+
+cache.on('error', (err) => {
+  console.error('Redis error:', err);
+});
+```
+
+### Can I share a Redis connection pool?
+
+Yes! Pass an existing Redis client:
+```typescript
+import { createClient } from 'redis';
+
+const redisClient = createClient();
+await redisClient.connect();
+
+const cache1 = new CacheManager(User, {
+  redis: { client: redisClient },
+});
+
+const cache2 = new CacheManager(Product, {
+  redis: { client: redisClient },
+});
+```
+
+### What happens to Redis keys when cache is cleared?
+
+Calling `clear()` removes all keys with the configured prefix from Redis. Calling `clear(field)` only clears the in-memory index for that field.
 
 ## 🐛 Troubleshooting
 

@@ -1,3 +1,4 @@
+// src/index.ts
 export { CacheManager } from "./CacheManager";
 export * from "./types";
 

@@ -1,29 +1,63 @@
 {
   "name": "sequelize-cache-manager",
-  "version": "0.4.0",
-  "description": "Lightweight cache manager for Sequelize models with TTL, stale-while-revalidate, and auto-refresh",
+  "version": "1.0.0",
+  "description": "Lightweight cache manager for Sequelize models with TTL, stale-while-revalidate, auto-refresh, and optional Redis backend.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "jest --runInBand",
     "lint": "eslint . --ext .ts",
     "prepare": "npm run build"
   },
-  "files": ["dist"],
-  "keywords": ["sequelize", "cache", "ttl", "stale-while-revalidate"],
-  "author": "",
+  "keywords": [
+    "sequelize",
+    "cache",
+    "ttl",
+    "stale-while-revalidate",
+    "redis",
+    "typescript",
+    "orm",
+    "caching"
+  ],
+  "author": "Artur Aleksanyan artur.aleksanyan202@gmail.com",
   "license": "MIT",
-  "devDependencies": {
-    "@types/jest": "^29.0.0",
-    "@types/node": "^20.0.0",
-    "eslint": "^8.0.0",
-    "jest": "^29.0.0",
-    "ts-jest": "^29.0.0",
-    "typescript": "^5.0.0"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arturaleksanyan/sequelize-cache-manager.git"
   },
+  "bugs": {
+    "url": "https://github.com/arturaleksanyan/sequelize-cache-manager/issues"
+  },
+  "homepage": "https://github.com/arturaleksanyan/sequelize-cache-manager#readme",
   "peerDependencies": {
     "sequelize": "^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "redis": {
+      "optional": true
+    }
+  },
+  "optionalDependencies": {
+    "redis": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.11",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.11.1",
+    "jest": "^29.7.0",
+    "redis": "^5.8.3",
+    "ts-jest": "^29.1.1",
+    "typescript": "^5.6.3"
   }
 }
-
