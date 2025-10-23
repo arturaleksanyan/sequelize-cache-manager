@@ -1,6 +1,8 @@
 // src/index.ts
 export { CacheManager } from "./CacheManager";
+export { MultiModelCacheManager } from "./MultiModelCacheManager";
 export * from "./types";
+export * from "./redis-types";
 
 // Type-safe event declarations using module augmentation
 import { Model } from "sequelize";

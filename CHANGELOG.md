@@ -5,6 +5,118 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2025-10-23
+
+### Added
+
+- **Comprehensive MultiModelCacheManager Documentation**:
+  - Complete README section with usage examples, API reference, and best practices
+  - Health check implementation examples
+  - Event monitoring patterns
+  - Cache export/import workflows
+  - Production deployment guidelines
+- **Complete Examples Section in README**:
+  - Centralized examples directory with descriptions for both single-model and multi-model use cases
+  - Single-model examples: basic-usage.ts, redis-usage.ts, cluster-sync.ts
+  - Multi-model examples: multi-model-basic.ts, multi-model-redis.ts, multi-model-advanced.ts
+  - Cross-references throughout documentation for easy navigation
+- **Example Files**:
+  - Basic multi-model usage example (`examples/multi-model-basic.ts`)
+  - Redis integration example (`examples/multi-model-redis.ts`)
+  - Advanced patterns example (`examples/multi-model-advanced.ts`)
+- **Comprehensive Test Suite**:
+  - 34 tests for MultiModelCacheManager covering all functionality
+  - Tests for initialization, data retrieval, cache operations, statistics, import/export, manager access, event forwarding, error handling, and graceful shutdown
+- **Production-Ready Enhancements for MultiModelCacheManager**:
+  - **Error Isolation in `destroy()`**: Each manager's destruction is wrapped in try/catch with summary logging for failed managers
+  - **Timeout Support in `waitUntilReady()`**: Configurable timeout (default 30s) to prevent hanging, with proper timeout cleanup
+  - **Stronger Redis Client Typing**: Changed `sharedRedisClient` from `any` to `RedisClientType` for better autocomplete and type safety
+  - **`getManagers()` Method**: Returns a copy of all cache managers for advanced scenarios like custom event handling or metrics collection
+  - **ESM/CommonJS Compatibility**: Redis dynamic import now handles both module formats (`redis.default ?? redis`)
+  - Debug logging for successful/failed manager destruction
+
+### Changed
+
+- **RedisClientType Interface**: Enhanced JSDoc comments to clarify it's intentionally minimal for dynamic import support
+- **Type Safety**: Removed unnecessary type cast in `size()` method - TypeScript already infers `Record<string, number>`
+- **Redis Reconnection**: Changed `reconnectStrategy` to return `null` instead of throwing `Error` per node-redis docs
+- **Event Forwarding**: `redisReconnecting` now forwards data parameter for consistency with other events
+- **Timeout Cleanup**: `waitUntilReady()` now uses `finally` block to ensure timeout is always cleared, preventing memory leaks
+
+### Fixed
+
+- **Graceful Degradation**: `destroy()` now uses `Promise.allSettled()` to ensure all cleanup attempts complete even if some fail
+- **Memory Leaks**: Fixed potential timer leak in `waitUntilReady()` by properly clearing timeout in all code paths
+
+## [1.0.1] - 2025-10-23
+
+### Added
+
+- **Production-Ready Enhancements for MultiModelCacheManager**:
+  - **Error Isolation in `destroy()`**: Each manager's destruction is wrapped in try/catch to ensure one failure doesn't block others
+  - **Timeout Support in `waitUntilReady()`**: Configurable timeout (default 30s) to prevent hanging if a model never becomes ready
+  - **Stronger Redis Client Typing**: Changed `sharedRedisClient` from `any` to `RedisClientType` for better autocomplete and type safety
+  - Debug logging for successful/failed manager destruction
+
+### Changed
+
+- **RedisClientType Interface**: Enhanced JSDoc comments to clarify it's intentionally minimal for dynamic import support
+- **Type Safety**: Casting shared Redis client to `RedisClientType` interface for consistent type checking
+
+### Fixed
+
+- **Graceful Degradation**: `destroy()` now uses `Promise.allSettled()` to ensure all cleanup attempts complete even if some fail
+
+## [1.0.0] - 2025-10-23
+
+### Added
+
+- **MultiModelCacheManager**: New orchestration class for managing multiple models
+  - Unified interface for managing cache across multiple Sequelize models
+  - **Shared Redis Connection**: Single Redis client shared across all models for efficient resource usage
+  - Automatic Redis key namespacing per model
+  - Event forwarding with model context
+  - Parallel initialization with `init()` method
+- **Type Safety Improvements**:
+  - New `CacheLogger` interface for type-safe logger configuration
+  - New `CacheStats` interface for strongly-typed statistics
+  - Exported `RedisClientType` with type guards for optional Redis usage
+  - Strongly typed return values for `getStats()`, `size()`, `toJSON()`, and `loadFromJSON()`
+- **Redis Initialization Enhancements**:
+  - Retry logic for initial Redis connection (3 attempts with exponential backoff)
+  - Cleaner dynamic import syntax (`import('redis').catch()` instead of `Function()` constructor)
+  - Clear precedence documentation: `url` takes priority over `host/port` configuration
+  - Debug logging for Redis configuration details
+- **Debug Logging**: Added debug-level logs to all major operations:
+  - `getById`, `getByKey`, `clear`, `invalidate` operations
+  - Redis connection initialization and configuration
+  - Helpful for production debugging and tracing
+  - Model-specific and bulk operations:
+    - `getManager(modelName)` - Get specific CacheManager instance
+    - `getById(modelName, id)` - Fetch by ID
+    - `getByKey(modelName, field, value)` - Fetch by custom key
+    - `getManyByKey(modelName, field, values)` - Bulk fetch by key
+    - `preload(modelName, source)` - Preload from async source
+    - `clear(modelName?)` - Clear specific model or all
+    - `refresh(modelName?, forceFull?)` - Refresh specific model or all
+    - `getStats(modelName?)` - Get stats for specific model or all
+    - `size(modelName?)` - Get size for specific model or all
+  - Utility methods:
+    - `isInitialized()` - Check initialization status
+    - `getModelNames()` - List all registered models
+    - `hasModel(modelName)` - Check if model is registered
+    - `waitUntilReady()` - Wait for all managers to be ready
+    - `invalidate(modelName, field, value)` - Invalidate specific item
+    - `getAll(modelName)` - Get all cached records for a model
+    - `toJSON(modelName)` / `loadFromJSON(modelName, data)` - Serialization per model
+  - Full TypeScript support with comprehensive JSDoc documentation
+  - All cache events forwarded with model name context
+
+### Changed
+
+- **Version**: Bumped to 1.0.0 to mark production-ready status
+- **Exports**: Added `MultiModelCacheManager` to package exports
+
 ## [0.7.0] - 2025-10-23
 
 ### Added

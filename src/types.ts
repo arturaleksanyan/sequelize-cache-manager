@@ -29,15 +29,45 @@ export interface CacheManagerOptions<T extends Model> {
     staleWhileRevalidate?: boolean;
     maxSize?: number; // Max number of items in memory cache (default: unlimited, LRU eviction when exceeded)
     redis?: RedisOptions;
-    logger?: {
-        info?: (...args: any[]) => void;
-        warn?: (...args: any[]) => void;
-        error?: (...args: any[]) => void;
-        debug?: (...args: any[]) => void;
-    };
+    logger?: CacheLogger;
 }
 
 export type PlainRecord = Record<string, any>;
+
+/**
+ * Logger interface for cache operations.
+ * All methods are optional and use safe optional chaining.
+ */
+export interface CacheLogger {
+    info?(...args: any[]): void;
+    warn?(...args: any[]): void;
+    error?(...args: any[]): void;
+    debug?(...args: any[]): void;
+}
+
+/**
+ * Cache statistics returned by getStats().
+ */
+export interface CacheStats {
+    total: number;
+    maxSize: number | null;
+    byKey: Record<string, number>;
+    metrics: {
+        hits: number;
+        misses: number;
+        evictions: number;
+        totalRequests: number;
+        hitRate: number;
+    };
+    lastSyncAt: number | null;
+    ttlMs: number | null;
+    syncing: boolean;
+    refreshIntervalMs: number;
+    lazyReload: boolean;
+    staleWhileRevalidate: boolean;
+    redisEnabled: boolean;
+    clusterSyncEnabled: boolean;
+}
 
 export type CacheManagerEvents = {
     synced: [];

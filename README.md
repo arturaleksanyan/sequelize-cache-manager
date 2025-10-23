@@ -4,11 +4,12 @@
 [![npm version](https://badge.fury.io/js/sequelize-cache-manager.svg)](https://www.npmjs.com/package/sequelize-cache-manager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A lightweight, production-ready cache manager for Sequelize models with advanced caching strategies. Built for applications that need fast, reliable data access without complex infrastructure.
+A lightweight, production-ready cache manager for Sequelize models with advanced caching strategies and multi-model orchestration. Built for applications that need fast, reliable data access without complex infrastructure.
 
 ## ✨ Features
 
 - 🚀 **High Performance** - In-memory caching with multiple key lookups
+- 🎯 **Multi-Model Management** - Orchestrate caching across multiple models with `MultiModelCacheManager`
 - ⏰ **TTL Support** - Automatic expiration with configurable time-to-live
 - 🔄 **Stale-While-Revalidate** - Serve stale data while refreshing in background
 - 🔁 **Auto-Refresh** - Periodic cache updates (full or incremental)
@@ -22,6 +23,7 @@ A lightweight, production-ready cache manager for Sequelize models with advanced
 - 🎯 **Selective Invalidation** - Remove specific items from cache
 - ⚡ **Ready State Management** - Wait for cache initialization to complete
 - 🔴 **Redis Backend (Optional)** - Persist cache to Redis for distributed systems
+- 🌐 **Cluster Sync** - Redis Pub/Sub for cross-instance cache invalidation
 
 ## 📦 Installation
 
@@ -72,6 +74,32 @@ const user = await userCache.getByKey('email', 'john@example.com');
 const userById = await userCache.getById(123);
 const allUsers = userCache.getAll();
 ```
+
+## 📚 Complete Examples
+
+The [examples](./examples) directory contains working examples for different use cases:
+
+### Single-Model Cache Examples
+
+| Example | Description | File |
+|---------|-------------|------|
+| **Basic Usage** | Quick start guide with core features: initialization, CRUD operations, hooks, events | [basic-usage.ts](./examples/basic-usage.ts) |
+| **Redis Backend** | Redis persistence, connection pooling, graceful degradation, TTL management | [redis-usage.ts](./examples/redis-usage.ts) |
+| **Cluster Sync** | Multi-instance cache coherence using Redis Pub/Sub for cross-instance invalidation | [cluster-sync.ts](./examples/cluster-sync.ts) |
+
+### Multi-Model Cache Examples
+
+| Example | Description | File |
+|---------|-------------|------|
+| **Basic Multi-Model** | CRUD operations, statistics, clearing, refreshing across multiple models | [multi-model-basic.ts](./examples/multi-model-basic.ts) |
+| **Multi-Model Redis** | Shared Redis connection, cluster sync, event monitoring, graceful shutdown | [multi-model-redis.ts](./examples/multi-model-redis.ts) |
+| **Advanced Patterns** | Custom logger, health checks, metrics, preloading, error recovery, cache warming | [multi-model-advanced.ts](./examples/multi-model-advanced.ts) |
+
+All examples include:
+- ✅ Complete working code
+- ✅ Inline comments and documentation
+- ✅ Error handling patterns
+- ✅ Best practices
 
 ## 🔴 Redis Backend (Optional)
 
@@ -251,7 +279,288 @@ cache.invalidate('email', 'john@example.com');
 - Microservices sharing the same models
 - Horizontal scaling with consistent caching
 
-For more examples, see [examples/redis-usage.ts](./examples/redis-usage.ts).
+See the [Complete Examples](#-complete-examples) section for detailed code samples.
+
+## 🎯 Multi-Model Cache Management
+
+For applications managing multiple Sequelize models, the `MultiModelCacheManager` provides a unified interface to orchestrate caching across all models with shared Redis connections and centralized configuration.
+
+### Why Use MultiModelCacheManager?
+
+- **Single Redis Connection**: Share one Redis client across all models instead of creating one per model
+- **Unified API**: Manage all model caches through a single interface
+- **Automatic Namespacing**: Redis keys are automatically prefixed per model (`cache:User:`, `cache:Product:`, etc.)
+- **Event Forwarding**: All cache events include the model name for easy debugging and monitoring
+- **Error Isolation**: Failures in one model don't affect others
+- **Parallel Initialization**: All models are initialized concurrently for faster startup
+
+### Basic Usage
+
+```typescript
+import { MultiModelCacheManager } from 'sequelize-cache-manager';
+import { User, Product, Order } from './models';
+
+// Initialize with multiple models
+const multiCache = new MultiModelCacheManager(
+  { User, Product, Order },  // Models as a record
+  {
+    ttlMs: 300000,            // 5 minutes TTL for all models
+    refreshIntervalMs: 60000, // Refresh every minute
+    keyFields: ['email', 'sku', 'orderNumber'],  // Fields to index across all models
+    redis: {
+      host: 'localhost',
+      port: 6379,
+      enableClusterSync: true,  // Enable cross-instance invalidation
+    },
+  }
+);
+
+// Initialize all caches
+await multiCache.init();
+await multiCache.waitUntilReady(10000); // Wait up to 10 seconds
+
+// Access data from any model
+const user = await multiCache.getById('User', 123);
+const product = await multiCache.getByKey('Product', 'sku', 'ABC-123');
+const orders = await multiCache.getManyByKey('Order', 'userId', [1, 2, 3]);
+
+// Get all cached records from a model
+const allProducts = multiCache.getAll('Product');
+
+// Refresh specific model or all models
+await multiCache.refresh('Product', true);  // Force full refresh
+await multiCache.refresh();                 // Refresh all models
+
+// Clear specific model or all models
+await multiCache.clear('User');
+await multiCache.clear();  // Clear all
+
+// Invalidate specific records
+await multiCache.invalidate('User', 'email', 'john@example.com');
+
+// Get statistics
+const stats = multiCache.getStats();
+console.log(stats.User.total);     // Number of cached users
+console.log(stats.Product.total);  // Number of cached products
+
+// Check sizes
+const sizes = multiCache.size();  // { User: 150, Product: 85, Order: 320 }
+const userCount = multiCache.size('User');  // 150
+
+// Graceful shutdown
+await multiCache.destroy();
+```
+
+### Direct Manager Access
+
+You can access individual `CacheManager` instances for advanced operations:
+
+```typescript
+// Get specific manager
+const userManager = multiCache.getManager('User');
+userManager.has('email', 'john@example.com');
+userManager.isExpired('email', 'john@example.com');
+
+// Get all managers for custom operations
+const managers = multiCache.getManagers();
+for (const [modelName, manager] of managers) {
+  console.log(`${modelName}: ${manager.size()} items`);
+}
+```
+
+### Event Monitoring
+
+All events from individual cache managers are forwarded with model context:
+
+```typescript
+multiCache.on('ready', (data) => {
+  console.log(`Cache ready for model: ${data.model}`);
+});
+
+multiCache.on('synced', (data) => {
+  console.log(`Synced ${data.model}`);
+});
+
+multiCache.on('error', (data) => {
+  console.error(`Error in ${data.model}:`, data.error);
+});
+
+multiCache.on('redisReconnected', (data) => {
+  console.log(`Redis reconnected for ${data.model || 'shared'}`);
+});
+
+multiCache.on('itemInvalidated', (data) => {
+  console.log(`Invalidated ${data.field}=${data.value} in ${data.model}`);
+});
+```
+
+### Cache Export/Import
+
+```typescript
+// Export cache data for backup
+const backup = {};
+for (const modelName of multiCache.getModelNames()) {
+  backup[modelName] = multiCache.toJSON(modelName, true);  // With metadata
+}
+
+// Restore from backup
+for (const [modelName, data] of Object.entries(backup)) {
+  multiCache.loadFromJSON(modelName, data, true);
+}
+```
+
+### Preloading from External Sources
+
+```typescript
+// Preload data from an external API
+await multiCache.preload('User', async () => {
+  const response = await fetch('https://api.example.com/users');
+  return await response.json();
+});
+```
+
+### Health Checks
+
+```typescript
+function performHealthCheck(multiCache: MultiModelCacheManager) {
+  const health = {
+    status: 'healthy',
+    models: {} as Record<string, any>,
+  };
+
+  if (!multiCache.isInitialized()) {
+    health.status = 'unhealthy';
+    return health;
+  }
+
+  const managers = multiCache.getManagers();
+  const stats = multiCache.getStats() as Record<string, any>;
+
+  for (const [modelName, manager] of managers) {
+    health.models[modelName] = {
+      cached: stats[modelName].total,
+      ready: manager.isReady(),
+      lastSync: stats[modelName].lastSyncAt,
+      hitRate: stats[modelName].metrics?.hitRate || 0,
+    };
+  }
+
+  return health;
+}
+```
+
+### Configuration Options
+
+All `CacheManagerOptions` are supported and applied to all models:
+
+```typescript
+const multiCache = new MultiModelCacheManager(
+  { User, Product, Order },
+  {
+    ttlMs: 300000,               // TTL for all models
+    refreshIntervalMs: 60000,    // Auto-refresh interval
+    maxSize: 10000,              // LRU eviction limit per model
+    keyFields: ['email', 'sku'], // Index fields across all models
+    lazyReload: true,            // Lazy load missing data
+    staleWhileRevalidate: true,  // Serve stale while refreshing
+    redis: {
+      url: 'redis://localhost:6379',
+      keyPrefix: 'myapp:',       // Global prefix (model names auto-added)
+      enableClusterSync: true,    // Cross-instance sync
+      reconnectStrategy: {
+        retries: 10,
+        factor: 2,
+        minTimeout: 1000,
+        maxTimeout: 30000,
+      },
+    },
+    logger: customLogger,         // Custom logger for all models
+  }
+);
+```
+
+### API Reference
+
+#### Constructor
+
+```typescript
+new MultiModelCacheManager(
+  models: Record<string, typeof Model>,
+  options?: CacheManagerOptions
+)
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `init()` | Initialize all cache managers in parallel |
+| `waitUntilReady(timeoutMs?)` | Wait for all models to be ready (default: 30s timeout) |
+| `getManager(modelName)` | Get the CacheManager instance for a specific model |
+| `getManagers()` | Get all cache managers as a Map |
+| `getById(modelName, id)` | Retrieve a record by ID |
+| `getByKey(modelName, field, value)` | Retrieve a record by custom key |
+| `getManyByKey(modelName, field, values)` | Bulk retrieve by key |
+| `getAll(modelName)` | Get all cached records for a model |
+| `refresh(modelName?, forceFull?)` | Refresh specific or all models |
+| `clear(modelName?)` | Clear specific or all model caches |
+| `invalidate(modelName, field, value)` | Invalidate specific record |
+| `preload(modelName, source)` | Preload from external async source |
+| `toJSON(modelName, includeMeta?)` | Export cache data |
+| `loadFromJSON(modelName, data, hasMeta?)` | Import cache data |
+| `getStats(modelName?)` | Get statistics for one or all models |
+| `size(modelName?)` | Get cache size for one or all models |
+| `getModelNames()` | Get array of managed model names |
+| `hasModel(modelName)` | Check if a model is managed |
+| `isInitialized()` | Check if initialized |
+| `destroy()` | Gracefully shutdown all managers |
+
+### Production Best Practices
+
+1. **Timeout Configuration**: Set reasonable timeouts based on your data size
+   ```typescript
+   await multiCache.waitUntilReady(15000); // 15 seconds for large datasets
+   ```
+
+2. **Error Monitoring**: Listen to error events to track per-model issues
+   ```typescript
+   multiCache.on('error', (data) => {
+     logger.error(`Cache error in ${data.model}:`, data.error);
+     metrics.increment(`cache.error.${data.model}`);
+   });
+   ```
+
+3. **Graceful Shutdown**: Always destroy on application shutdown
+   ```typescript
+   process.on('SIGTERM', async () => {
+     await multiCache.destroy();
+     process.exit(0);
+   });
+   ```
+
+4. **Health Checks**: Implement health endpoints
+   ```typescript
+   app.get('/health/cache', (req, res) => {
+     const health = performHealthCheck(multiCache);
+     res.json(health);
+   });
+   ```
+
+5. **Metrics Collection**: Track cache performance
+   ```typescript
+   const stats = multiCache.getStats() as Record<string, any>;
+   for (const [model, modelStats] of Object.entries(stats)) {
+     metrics.gauge(`cache.${model}.size`, modelStats.total);
+     metrics.gauge(`cache.${model}.hit_rate`, modelStats.metrics?.hitRate || 0);
+   }
+   ```
+
+### Examples
+
+For complete working examples, see the [Complete Examples](#-complete-examples) section at the top of this document, which includes:
+- Multi-model basic usage patterns
+- Redis integration with shared connections
+- Advanced monitoring and health checks
 
 ## ⚠️ Limitations & Important Considerations
 
