@@ -7,6 +7,7 @@ import { Model } from "sequelize";
 import { CacheManagerEvents } from "./types";
 
 declare module "./CacheManager" {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     interface CacheManager<T extends Model> {
         on<U extends keyof CacheManagerEvents>(
             event: U,

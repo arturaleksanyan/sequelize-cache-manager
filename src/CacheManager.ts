@@ -495,7 +495,7 @@ export class CacheManager<T extends Model> extends EventEmitter {
         const refs = (this as any)._hookRefs;
         if (!refs) return;
 
-        const tryRemove = (type: string, fn: Function) => {
+        const tryRemove = (type: string, fn: (...args: any[]) => void) => {
             try {
                 m.removeHook(type, fn as any);
             } catch (err) {
@@ -695,7 +695,8 @@ export class CacheManager<T extends Model> extends EventEmitter {
             .map(([id, entry]) => ({
                 id,
                 keys: Object.entries(this.cache.byKey)
-                    .filter(([_, vals]) => Object.values(vals).includes(entry))
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    .filter(([_key, vals]) => Object.values(vals).includes(entry))
                     .map(([field]) => field),
                 expiresAt: entry.expiresAt,
                 expired: this.ttlMs ? entry.expiresAt < Date.now() : false,

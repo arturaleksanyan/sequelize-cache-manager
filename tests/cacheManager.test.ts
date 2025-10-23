@@ -5,7 +5,7 @@ class FakeModel {
     static modelName = "Fake";
     static _rows: any[] = [];
     static _shouldFailNext = false;
-    static _hooks: Record<string, Function[]> = {};
+    static _hooks: Record<string, ((...args: any[]) => void)[]> = {};
 
     static async findAll(options?: any) {
         if (this._shouldFailNext) {
@@ -56,12 +56,12 @@ class FakeModel {
         return { id: {}, name: {}, updatedAt: {} };
     }
 
-    static addHook(hookType: string, fn: Function) {
+    static addHook(hookType: string, fn: (...args: any[]) => void) {
         if (!this._hooks[hookType]) this._hooks[hookType] = [];
         this._hooks[hookType].push(fn);
     }
 
-    static removeHook(hookType: string, fn: Function) {
+    static removeHook(hookType: string, fn: (...args: any[]) => void) {
         if (this._hooks[hookType]) {
             this._hooks[hookType] = this._hooks[hookType].filter(h => h !== fn);
         }
@@ -373,7 +373,6 @@ describe("CacheManager", () => {
             await cm.sync(false);
 
             const data = cm.toJSON() as any[];
-            const original = data[0];
 
             // Mutate exported data
             data[0].name = "MUTATED";

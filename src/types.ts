@@ -12,6 +12,7 @@ export interface RedisOptions {
     enableClusterSync?: boolean; // Enable Pub/Sub for multi-instance cache sync
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export interface CacheManagerOptions<T extends Model> {
     keyFields?: string | string[];
     refreshIntervalMs?: number;
