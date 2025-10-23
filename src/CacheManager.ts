@@ -75,31 +75,56 @@ export class CacheManager<T extends Model> extends EventEmitter {
                     return;
                 }
 
+                // Configure reconnect strategy
+                const reconnectConfig = redisOptions.reconnectStrategy ?? {};
+                const retries = reconnectConfig.retries ?? 10;
+                const factor = reconnectConfig.factor ?? 2;
+                const minTimeout = reconnectConfig.minTimeout ?? 1000;
+                const maxTimeout = reconnectConfig.maxTimeout ?? 30000;
+
                 const clientOptions: any = {
                     url: redisOptions.url,
-                    socket: redisOptions.host ? {
-                        host: redisOptions.host,
-                        port: redisOptions.port ?? 6379
-                    } : undefined,
+                    socket: {
+                        ...(redisOptions.host ? {
+                            host: redisOptions.host,
+                            port: redisOptions.port ?? 6379
+                        } : {}),
+                        // Exponential backoff reconnection strategy
+                        reconnectStrategy: (attempt: number) => {
+                            if (attempt > retries) {
+                                this.logger.error?.(`Redis reconnect failed after ${retries} attempts`);
+                                return new Error(`Max reconnection attempts (${retries}) exceeded`);
+                            }
+                            const delay = Math.min(minTimeout * Math.pow(factor, attempt - 1), maxTimeout);
+                            this.logger.info?.(`Redis reconnecting (attempt ${attempt}/${retries}) in ${delay}ms...`);
+                            this.emit('redisReconnecting', { attempt, delay });
+                            return delay;
+                        }
+                    },
                     password: redisOptions.password,
                     database: redisOptions.db ?? 0,
                 };
 
                 this.redisClient = redis.createClient(clientOptions);
+
+                // Connection event handlers
                 this.redisClient.on('error', (err: Error) => {
                     this.logger.error?.('Redis client error:', err);
                     this.emit('error', err);
                 });
 
+                this.redisClient.on('connect', () => {
+                    this.logger.info?.('Redis connected successfully');
+                });
+
+                this.redisClient.on('ready', () => {
+                    this.logger.info?.('Redis client ready');
+                    this.emit('redisReconnected');
+                });
+
                 this.redisClient.on('end', () => {
-                    this.logger.warn?.('Redis connection lost. Attempting to reconnect...');
-                    setTimeout(() => {
-                        if (this.redisClient && !this.redisClient.isOpen) {
-                            this.redisClient.connect().catch((err: Error) => {
-                                this.logger.error?.('Redis reconnect failed:', err);
-                            });
-                        }
-                    }, 5000);
+                    this.logger.warn?.('Redis connection closed');
+                    this.emit('redisDisconnected');
                 });
 
                 await this.redisClient.connect();
@@ -122,7 +147,18 @@ export class CacheManager<T extends Model> extends EventEmitter {
     private async _initClusterSync() {
         try {
             // Create a separate subscriber client (Redis requirement)
+            // It inherits the reconnection strategy from the main client
             this.redisSubscriber = this.redisClient.duplicate();
+
+            // Add event handlers for subscriber
+            this.redisSubscriber.on('error', (err: Error) => {
+                this.logger.error?.('Redis subscriber error:', err);
+            });
+
+            this.redisSubscriber.on('ready', () => {
+                this.logger.info?.('Redis subscriber reconnected');
+            });
+
             await this.redisSubscriber.connect();
 
             const channel = `${this.redisKeyPrefix}invalidate`;

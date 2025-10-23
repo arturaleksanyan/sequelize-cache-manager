@@ -108,6 +108,12 @@ interface RedisOptions {
   keyPrefix?: string;        // Prefix for cache keys (default: 'cache:ModelName:')
   client?: any;              // External Redis client (reuse existing connection)
   enableClusterSync?: boolean; // Enable Pub/Sub for multi-instance cache sync (default: false)
+  reconnectStrategy?: {      // Auto-reconnect configuration
+    retries?: number;        // Max reconnection attempts (default: 10)
+    factor?: number;         // Exponential backoff factor (default: 2)
+    minTimeout?: number;     // Min delay in ms (default: 1000)
+    maxTimeout?: number;     // Max delay in ms (default: 30000)
+  };
 }
 ```
 
@@ -118,10 +124,60 @@ interface RedisOptions {
 - **TTL Support**: Redis TTL is automatically set based on `ttlMs` option
 - **Connection Pooling**: Reuse existing Redis clients for efficiency
 - **Fire-and-Forget Writes**: Non-blocking Redis operations for optimal performance
-- **Auto-Reconnect**: Automatically attempts to reconnect on connection loss
+- **Auto-Reconnect**: Exponential backoff reconnection with configurable retry limits
 - **Batch Operations**: Full sync uses Redis pipelines for optimal performance
 - **Scalable Clear**: Uses SCAN iterator instead of KEYS for large datasets
 - **Cluster Sync (Optional)**: Multi-instance cache coherence via Redis Pub/Sub
+
+### Auto-Reconnect Behavior
+
+The cache manager automatically handles Redis connection failures with **exponential backoff**:
+
+**Default Strategy:**
+- **Max Retries**: 10 attempts
+- **Backoff Factor**: 2x (1s, 2s, 4s, 8s, 16s, 32s → capped at 30s)
+- **Min Delay**: 1000ms (1 second)
+- **Max Delay**: 30000ms (30 seconds)
+
+**Events:**
+- `redisReconnecting` - Emitted on each reconnection attempt
+- `redisReconnected` - Emitted when connection is restored
+- `redisDisconnected` - Emitted when connection is lost
+
+**Custom Reconnect Strategy:**
+
+```typescript
+const cache = new CacheManager(User, {
+  redis: {
+    url: 'redis://localhost:6379',
+    reconnectStrategy: {
+      retries: 20,        // Try 20 times before giving up
+      factor: 1.5,        // Slower backoff (1.5x instead of 2x)
+      minTimeout: 500,    // Start with 500ms delay
+      maxTimeout: 60000,  // Max 60 seconds between retries
+    },
+  },
+});
+
+// Monitor reconnection attempts
+cache.on('redisReconnecting', ({ attempt, delay }) => {
+  console.log(`Reconnect attempt ${attempt}, waiting ${delay}ms...`);
+});
+
+cache.on('redisReconnected', () => {
+  console.log('✅ Redis connection restored');
+});
+
+cache.on('redisDisconnected', () => {
+  console.warn('⚠️ Redis connection lost');
+});
+```
+
+**Production Notes:**
+- The cache continues to work in **memory-only mode** if Redis is unavailable
+- Both the main client and Pub/Sub subscriber auto-reconnect independently
+- Cache operations are **non-blocking** - Redis failures don't stop your app
+- After max retries exceeded, you'll need to restart the cache manager
 
 ### Examples
 
@@ -505,6 +561,9 @@ CacheManager extends `EventEmitter` and emits the following events:
 | `clearedField` | `string` | Specific field index cleared |
 | `error` | `Error` | Error during sync/refresh/lazy-load |
 | `ready` | - | Cache initialization completed (after `autoLoad()`) |
+| `redisReconnecting` | `{ attempt, delay }` | Redis reconnection attempt started |
+| `redisReconnected` | - | Redis connection restored |
+| `redisDisconnected` | - | Redis connection lost |
 
 **Note:** All events are fully type-safe with IntelliSense support!
 

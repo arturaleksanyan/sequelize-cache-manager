@@ -10,6 +10,12 @@ export interface RedisOptions {
     keyPrefix?: string;
     client?: any; // External Redis client (RedisClientType from 'redis')
     enableClusterSync?: boolean; // Enable Pub/Sub for multi-instance cache sync
+    reconnectStrategy?: {
+        retries?: number; // Max reconnection attempts (default: 10)
+        factor?: number; // Exponential backoff factor (default: 2)
+        minTimeout?: number; // Min delay in ms (default: 1000)
+        maxTimeout?: number; // Max delay in ms (default: 30000)
+    };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -44,5 +50,8 @@ export type CacheManagerEvents = {
     clearedField: [string];
     error: [Error];
     ready: [];
+    redisReconnecting: [{ attempt: number; delay: number }];
+    redisReconnected: [];
+    redisDisconnected: [];
 };
 

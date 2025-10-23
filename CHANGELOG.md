@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2025-10-23
+
+### Added
+
+- **Enhanced Redis Auto-Reconnect**: Exponential backoff reconnection strategy
+  - Configurable via `redis.reconnectStrategy` option
+  - Default: 10 retries with 2x exponential backoff (1s → 30s max)
+  - Customizable `retries`, `factor`, `minTimeout`, `maxTimeout`
+  - Both main client and Pub/Sub subscriber auto-reconnect independently
+- **Reconnection Events**: New typed events for monitoring Redis connection state
+  - `redisReconnecting` - Emitted on each reconnection attempt with `{ attempt, delay }`
+  - `redisReconnected` - Emitted when connection is restored
+  - `redisDisconnected` - Emitted when connection is lost
+
+### Improved
+
+- **Built-in Reconnect Strategy**: Uses Redis client's native reconnection instead of manual implementation
+- **Better Connection Monitoring**: Enhanced event handlers for all Redis connection states
+- **Subscriber Resilience**: Added event handlers for Pub/Sub subscriber reconnection
+
+### Documentation
+
+- Added comprehensive "Auto-Reconnect Behavior" section to README
+- Updated `RedisOptions` interface with `reconnectStrategy` field
+- Added example for monitoring and customizing reconnection behavior
+- Updated events table with new Redis connection events
+
 ## [0.6.0] - 2025-10-22
 
 ### Added
