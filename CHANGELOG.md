@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2025-10-23
+
+### Added
+
+- **LRU Eviction**: Configurable `maxSize` option with Least Recently Used eviction
+  - Prevents unbounded memory growth for large datasets
+  - Automatic eviction when cache exceeds configured limit
+  - `evicted` event emitted when items are removed
+  - LRU tracking for all cache access operations
+- **Cache Metrics**: Performance monitoring with hit/miss tracking
+  - `metrics.hits` - Count of cache hits
+  - `metrics.misses` - Count of cache misses
+  - `metrics.evictions` - Count of LRU evictions
+  - `metrics.totalRequests` - Total cache requests
+  - `metrics.hitRate` - Percentage hit rate
+- **Comprehensive Limitations Documentation**: New "⚠️ Limitations & Important Considerations" section
+  - Caching scope (what is/isn't cached)
+  - Hook-based invalidation edge cases
+  - Memory management strategies
+  - Stale-while-revalidate behavior
+  - Large dataset syncing recommendations
+  - Redis considerations
+  - TypeScript & Sequelize compatibility notes
+  - Testing & concurrency guidance
+
+### Improved
+
+- **getStats()**: Enhanced to include performance metrics, maxSize, redisEnabled, and clusterSyncEnabled
+- **Memory Warnings**: Replaced generic 50k warning with `maxSize` proximity alerts (warns at 90% capacity)
+- **LRU Updates**: All cache access methods (`getById`, `getByKey`) now update LRU order
+- **Clear Operation**: Resets metrics on full cache clear
+
+### Documentation
+
+- Added detailed limitations and considerations section
+- Updated API documentation with new `maxSize` option
+- Updated events table with `evicted` event
+- Enhanced `getStats()` documentation with metrics examples
+- Added examples for memory management best practices
+
 ## [0.6.1] - 2025-10-23
 
 ### Added

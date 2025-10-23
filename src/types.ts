@@ -27,6 +27,7 @@ export interface CacheManagerOptions<T extends Model> {
     cleanupIntervalMs?: number;
     lazyReload?: boolean;
     staleWhileRevalidate?: boolean;
+    maxSize?: number; // Max number of items in memory cache (default: unlimited, LRU eviction when exceeded)
     redis?: RedisOptions;
     logger?: {
         info?: (...args: any[]) => void;
@@ -53,5 +54,6 @@ export type CacheManagerEvents = {
     redisReconnecting: [{ attempt: number; delay: number }];
     redisReconnected: [];
     redisDisconnected: [];
+    evicted: [{ id: string | number; reason: 'lru' | 'size-limit' }];
 };
 

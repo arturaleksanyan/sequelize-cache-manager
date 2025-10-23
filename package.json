@@ -1,7 +1,7 @@
 {
   "name": "sequelize-cache-manager",
-  "version": "0.6.1",
-  "description": "Lightweight cache manager for Sequelize models with TTL, stale-while-revalidate, auto-refresh, and optional Redis backend.",
+  "version": "0.7.0",
+  "description": "Lightweight cache manager for Sequelize models with TTL, stale-while-revalidate, auto-refresh, LRU eviction, and optional Redis backend.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

@@ -29,8 +29,11 @@ export class CacheManager<T extends Model> extends EventEmitter {
     private redisKeyPrefix: string = "";
     private redisEnabled: boolean = false;
     private clusterSyncEnabled: boolean = false;
+    private maxSize: number | null; // Max cache size (LRU eviction)
 
     private cache: { id: Record<string, CacheEntry>; byKey: Record<string, Record<string, CacheEntry>> } = { id: {}, byKey: {} };
+    private lruOrder: string[] = []; // Track access order for LRU eviction (stores ids)
+    private metrics = { hits: 0, misses: 0, evictions: 0 }; // Performance metrics
     private refreshTimer: NodeJS.Timeout | null = null;
     private cleanupTimer: NodeJS.Timeout | null = null;
     private syncing = false;
@@ -52,6 +55,7 @@ export class CacheManager<T extends Model> extends EventEmitter {
         this.staleWhileRevalidate = options.staleWhileRevalidate ?? true;
         this.logger = options.logger ?? console;
         this.minAutoSyncInterval = options.minAutoSyncInterval ?? 10_000;
+        this.maxSize = options.maxSize ?? null;
 
         // Initialize Redis if configured
         if (options.redis) {
@@ -223,6 +227,45 @@ export class CacheManager<T extends Model> extends EventEmitter {
         return result;
     }
 
+    private _updateLRU(id: string | number) {
+        const idStr = String(id);
+        // Remove from current position
+        const index = this.lruOrder.indexOf(idStr);
+        if (index > -1) {
+            this.lruOrder.splice(index, 1);
+        }
+        // Add to end (most recently used)
+        this.lruOrder.push(idStr);
+    }
+
+    private _evictLRU() {
+        if (this.lruOrder.length === 0) return;
+
+        // Remove least recently used (first in array)
+        const lruId = this.lruOrder.shift();
+        if (!lruId) return;
+
+        // Get entry before deletion for logging
+        const entry = this.cache.id[lruId];
+
+        // Remove from all caches
+        this._removeById(lruId);
+
+        // Remove from key indexes
+        if (entry) {
+            for (const keyField of this.keyFields) {
+                const keyValue = entry.data[keyField];
+                if (keyValue !== undefined && keyValue !== null) {
+                    this._removeByKey(keyField, keyValue);
+                }
+            }
+        }
+
+        this.metrics.evictions++;
+        this.emit('evicted', { id: lruId, reason: 'lru' });
+        this.logger.debug?.(`Evicted LRU item ${lruId} from ${this.model.name} cache`);
+    }
+
     private _setItem(instance: T) {
         const plain = instance.get ? instance.get({ plain: true }) : { ...(instance as any) };
         const expiresAt = this._getExpiryTime();
@@ -233,8 +276,22 @@ export class CacheManager<T extends Model> extends EventEmitter {
             this.logger.warn?.(`Model ${this.model.name} has no 'id' field, caching may be inconsistent`);
         }
 
+        // Check if we need to evict before adding (maxSize limit)
+        if (this.maxSize && this.maxSize > 0) {
+            const idStr = String(plain.id);
+            const isUpdate = this.cache.id[idStr] !== undefined;
+
+            // Only evict if this is a new entry and we're at capacity
+            if (!isUpdate && Object.keys(this.cache.id).length >= this.maxSize) {
+                this._evictLRU();
+            }
+        }
+
         // store by id as canonical entry
         this.cache.id[plain.id] = entry;
+
+        // Update LRU tracking
+        this._updateLRU(plain.id);
 
         for (const keyField of this.keyFields) {
             const keyValue = plain[keyField];
@@ -257,18 +314,25 @@ export class CacheManager<T extends Model> extends EventEmitter {
             }
         }
 
-        // Log memory usage periodically and warn if too large
+        // Log memory usage periodically
         const cacheSize = Object.keys(this.cache.id).length;
         if (cacheSize % 1000 === 0 && cacheSize > 0) {
             this.logger.info?.(`${this.model.name} cache size: ${cacheSize} entries`);
         }
-        if (cacheSize > 50_000 && cacheSize % 10_000 === 0) {
-            this.logger.warn?.(`Cache size exceeded ${cacheSize} for ${this.model.name}, consider TTL tuning.`);
+        if (this.maxSize && cacheSize > this.maxSize * 0.9 && cacheSize % 100 === 0) {
+            this.logger.warn?.(`Cache size ${cacheSize} approaching limit ${this.maxSize} for ${this.model.name}`);
         }
     }
 
     private _removeById(id: string | number) {
-        delete this.cache.id[String(id)];
+        const idStr = String(id);
+        delete this.cache.id[idStr];
+
+        // Remove from LRU order
+        const index = this.lruOrder.indexOf(idStr);
+        if (index > -1) {
+            this.lruOrder.splice(index, 1);
+        }
 
         // Remove from Redis if enabled (fire-and-forget for performance)
         if (this.redisEnabled && this.redisClient) {
@@ -374,13 +438,22 @@ export class CacheManager<T extends Model> extends EventEmitter {
                 if (cached) {
                     entry = JSON.parse(cached);
                     this.cache.id[String(id)] = entry; // Restore to memory
+                    this._updateLRU(id); // Track LRU on Redis hit
                 }
             } catch (err) {
                 this.logger.error?.('Redis get failed:', err);
             }
         }
 
-        if (!entry) return await this._lazyLoadById(id);
+        if (!entry) {
+            this.metrics.misses++;
+            return await this._lazyLoadById(id);
+        }
+
+        // Cache hit
+        this.metrics.hits++;
+        this._updateLRU(id);
+
         if (this.ttlMs && entry.expiresAt < now) {
             if (this.staleWhileRevalidate) {
                 this._lazyLoadById(id);
@@ -395,7 +468,19 @@ export class CacheManager<T extends Model> extends EventEmitter {
     async getByKey(field: string, value: string | number) {
         const entry = this.cache.byKey?.[field]?.[String(value)];
         const now = Date.now();
-        if (!entry) return await this._lazyLoadByKey(field, value);
+
+        if (!entry) {
+            this.metrics.misses++;
+            return await this._lazyLoadByKey(field, value);
+        }
+
+        // Cache hit
+        this.metrics.hits++;
+        // Update LRU using the entry's id
+        if (entry.data.id !== undefined) {
+            this._updateLRU(entry.data.id);
+        }
+
         if (this.ttlMs && entry.expiresAt < now) {
             if (this.staleWhileRevalidate) {
                 this._lazyLoadByKey(field, value);
@@ -417,6 +502,8 @@ export class CacheManager<T extends Model> extends EventEmitter {
     async clear(field?: string) {
         if (!field) {
             this.cache = { id: {}, byKey: {} };
+            this.lruOrder = [];
+            this.metrics = { hits: 0, misses: 0, evictions: 0 };
 
             // Clear Redis if enabled (using SCAN for better performance)
             if (this.redisEnabled && this.redisClient) {
@@ -648,18 +735,31 @@ export class CacheManager<T extends Model> extends EventEmitter {
     }
 
     getStats() {
+        const totalRequests = this.metrics.hits + this.metrics.misses;
+        const hitRate = totalRequests > 0 ? (this.metrics.hits / totalRequests) * 100 : 0;
+
         return {
             total: Object.keys(this.cache.id).length,
+            maxSize: this.maxSize,
             byKey: Object.entries(this.cache.byKey).reduce((acc, [field, values]) => {
                 acc[field] = Object.keys(values).length;
                 return acc;
             }, {} as Record<string, number>),
+            metrics: {
+                hits: this.metrics.hits,
+                misses: this.metrics.misses,
+                evictions: this.metrics.evictions,
+                totalRequests,
+                hitRate: Math.round(hitRate * 100) / 100, // Round to 2 decimal places
+            },
             lastSyncAt: this.lastSyncAt,
             ttlMs: this.ttlMs,
             syncing: this.syncing,
             refreshIntervalMs: this.refreshIntervalMs,
             lazyReload: this.lazyReload,
             staleWhileRevalidate: this.staleWhileRevalidate,
+            redisEnabled: this.redisEnabled,
+            clusterSyncEnabled: this.clusterSyncEnabled,
         };
     }
 

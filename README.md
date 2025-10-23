@@ -253,6 +253,133 @@ cache.invalidate('email', 'john@example.com');
 
 For more examples, see [examples/redis-usage.ts](./examples/redis-usage.ts).
 
+## ⚠️ Limitations & Important Considerations
+
+### Caching Scope
+
+**✅ What IS cached:**
+- Individual records accessed by `id` or `keyFields` (e.g., `getById`, `getByKey`)
+- Full model syncs via `sync()` or `autoLoad()`
+
+**❌ What is NOT cached:**
+- Arbitrary query results (e.g., `findAll({ where: { status: 'active' } })`)
+- Complex joins, aggregations, or custom SQL queries
+- Association data (unless explicitly configured)
+
+**Why:** This library focuses on **entity-level caching** (caching individual records by unique identifiers). For query result caching, consider a separate query cache layer or Redis-based query caching.
+
+### Hook-Based Invalidation Limitations
+
+**How hooks work:**
+- `afterCreate`, `afterUpdate`, `afterDestroy` hooks invalidate cache entries when models change
+- Works great for single-instance apps or with Redis cluster sync enabled
+
+**Edge cases to be aware of:**
+1. **Bulk updates without hooks**: `Model.update()` bypasses instance hooks. Use `{individualHooks: true}` or manually call `cache.invalidate()`.
+2. **Direct SQL updates**: Any raw SQL or database changes outside Sequelize won't trigger cache invalidation.
+3. **KeyField mutations**: If a record's `keyField` value changes (e.g., email update), the old key may remain cached until TTL expires. Consider invalidating manually.
+
+```typescript
+// ❌ Bypasses cache invalidation
+await User.update({ status: 'inactive' }, { where: { age: { [Op.gt]: 65 } } });
+
+// ✅ Triggers cache invalidation
+await User.update({ status: 'inactive' }, { 
+  where: { age: { [Op.gt]: 65 } },
+  individualHooks: true  // Forces hook execution
+});
+
+// ✅ Manual invalidation
+await User.update({ email: 'newemail@example.com' }, { where: { id: 123 } });
+cache.invalidate('email', 'oldemail@example.com'); // Clean up old key
+```
+
+### Memory Management
+
+**Without `maxSize`:**
+- Cache grows unbounded until TTL cleanup or manual `clear()`
+- Suitable for small-medium datasets (< 10k records)
+- Monitor with `getStats()` - warning logged at 50k+ entries
+
+**With `maxSize` (Recommended for large datasets):**
+- LRU (Least Recently Used) eviction when limit reached
+- Protects against memory exhaustion
+- Track evictions via `evicted` event
+
+```typescript
+const cache = new CacheManager(Product, {
+  maxSize: 10000, // Keep max 10k products in memory
+  ttlMs: 300000,  // 5 minutes
+});
+
+cache.on('evicted', ({ id, reason }) => {
+  console.log(`Evicted product ${id} due to ${reason}`);
+});
+```
+
+### Stale-While-Revalidate Behavior
+
+When `staleWhileRevalidate: true` (default) and TTL expires:
+- **First request after expiry**: Returns stale data immediately + triggers background refresh
+- **Subsequent requests**: Get fresh data once refresh completes
+
+**Trade-off:** Users might see slightly stale data briefly after TTL expiration. If strict freshness is required, set `staleWhileRevalidate: false` (but expect occasional latency on cache misses).
+
+### Large Dataset Syncing
+
+**Full sync performance:**
+- `sync(false)` loads entire table into memory via `Model.findAll()`
+- For tables with 100k+ rows, this may cause:
+  - High memory usage
+  - Long startup time
+  - Heavy database load
+
+**Recommendations:**
+1. Use **incremental sync** with `updatedAt` field (automatic if field exists)
+2. Set `maxSize` to limit memory footprint
+3. Consider **lazy-only mode** (no preload):
+   ```typescript
+   const cache = new CacheManager(Model, {
+     refreshIntervalMs: 0, // Disable auto-refresh
+     lazyReload: true,     // Load on-demand only
+   });
+   await cache.attachHooks(); // Only use hooks, skip initial sync
+   ```
+4. For very large datasets, use Redis as primary cache and memory as L1 cache
+
+### Redis Considerations
+
+**Fire-and-Forget Writes:**
+- Redis operations are non-blocking for performance
+- Cache continues working if Redis is down (memory-only fallback)
+- Redis failures are logged but don't stop your app
+
+**Cluster Sync Requirements:**
+- Requires `enableClusterSync: true` for multi-instance invalidation
+- Uses Redis Pub/Sub (requires separate subscriber connection)
+- Instance-to-instance invalidation may have 10-100ms delay
+
+**When Redis is unavailable:**
+- Cache falls back to memory-only mode
+- Auto-reconnect attempts with exponential backoff
+- After max retries, manual restart may be needed
+
+### TypeScript & Sequelize Version Compatibility
+
+- **Sequelize**: Tested with v6.x (should work with v7 with minor adjustments)
+- **TypeScript**: Requires TypeScript 4.5+ for proper type inference
+- **Model typing**: Uses `Model<any, any>` cast for hook compatibility - may need adjustments for strict custom types
+
+### Testing & Concurrency
+
+**Handled safely:**
+- Multiple simultaneous `getById()` calls for same ID (deduplicated)
+- Concurrent reads during sync/refresh
+
+**Not thread-safe:**
+- Concurrent writes to same key from multiple processes (use Redis cluster sync)
+- Race conditions in `keyField` updates (manual invalidation recommended)
+
 ## 📖 API Reference
 
 ### Constructor
@@ -267,6 +394,7 @@ new CacheManager<T extends Model>(model: typeof Model, options?: CacheManagerOpt
 |--------|------|---------|-------------|
 | `keyFields` | `string \| string[]` | `['id']` | Fields to index for fast lookups |
 | `ttlMs` | `number \| null` | `null` | Time-to-live in milliseconds (null = no expiration) |
+| `maxSize` | `number \| null` | `null` | Max cache entries (LRU eviction when exceeded, null = unlimited) |
 | `refreshIntervalMs` | `number` | `300000` | Auto-refresh interval (5 minutes) |
 | `cleanupIntervalMs` | `number` | `60000` | TTL cleanup interval (1 minute) |
 | `lazyReload` | `boolean` | `true` | Load missing items on-demand |
@@ -394,20 +522,30 @@ cache.invalidate('id', 123);
 
 #### `getStats(): CacheStats`
 
-Get detailed cache statistics including size, configuration, and status.
+Get detailed cache statistics including size, configuration, performance metrics, and status.
 
 ```typescript
 const stats = cache.getStats();
 console.log(stats);
 // {
 //   total: 1500,
+//   maxSize: 10000,
 //   byKey: { email: 1500, username: 1500 },
+//   metrics: {
+//     hits: 8542,
+//     misses: 158,
+//     evictions: 23,
+//     totalRequests: 8700,
+//     hitRate: 98.18  // Percentage
+//   },
 //   lastSyncAt: 1634567890000,
 //   ttlMs: 60000,
 //   syncing: false,
 //   refreshIntervalMs: 300000,
 //   lazyReload: true,
-//   staleWhileRevalidate: true
+//   staleWhileRevalidate: true,
+//   redisEnabled: true,
+//   clusterSyncEnabled: false
 // }
 ```
 
@@ -559,6 +697,7 @@ CacheManager extends `EventEmitter` and emits the following events:
 | `refreshedItem` | `PlainRecord` | Item lazy-loaded |
 | `itemInvalidated` | `{ field, value }` | Item manually invalidated |
 | `clearedField` | `string` | Specific field index cleared |
+| `evicted` | `{ id, reason }` | Item evicted from cache (LRU or size limit) |
 | `error` | `Error` | Error during sync/refresh/lazy-load |
 | `ready` | - | Cache initialization completed (after `autoLoad()`) |
 | `redisReconnecting` | `{ attempt, delay }` | Redis reconnection attempt started |
