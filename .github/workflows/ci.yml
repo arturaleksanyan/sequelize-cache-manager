@@ -30,7 +30,7 @@ jobs:
         run: npm run lint
 
       - name: Run tests
-        run: npm test
+        run: npx jest --detectOpenHandles --forceExit
 
       - name: Build package
         run: npm run build
